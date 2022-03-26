@@ -1,0 +1,60 @@
+// attach an IAM user role to the jenkins server / ec2 to use the aws cli command below
+
+
+pipeline {
+    agent any
+    environment{
+        SRV1APACHE = "172.31.27.194"
+        SRV2DOCKER = "172.31.19.224"
+        GITURL = "https://github.com/itrobasi/motivate.git"
+    }
+   
+    stages {
+        stage('GitHubClone') {
+            steps {
+                // some block/notification/etc
+                git "${GITURL}"
+            }
+        }
+        stage('Copy2UserHome') {
+            steps {
+                // some block/notification/etc
+                sh "sudo rm -rf /home/ubuntu/* && sudo mkdir -p /home/ubuntu/webapp && sudo mkdir -p /home/ubuntu/scripts"
+                sh "sudo cp -r /var/lib/jenkins/workspace/web-02/web/* /home/ubuntu/webapp/" 
+                sh "sudo cp -r /var/lib/jenkins/workspace/web-02/scripts/* /home/ubuntu/scripts/" 
+                sh "cd /home/ubuntu/webapp && sudo rm -rf README.md"
+            }
+        }
+        stage('Push2S3Bucket') {
+            steps {
+                // some block/notification/etc
+                sh "aws s3 rm s3://www.3.myntblack.com --recursive"
+                sh "aws s3 cp /home/ubuntu/webapp/ s3://www.3.myntblack.com --grants read=uri=http://acs.amazonaws.com/groups/global/AllUsers --recursive"
+            }
+        }
+        stage('Push2AppServer') {
+            steps {
+                sshagent(['apache-websrv']) {
+                    // some block
+                    sh 'ssh -o StrictHostKeyChecking=no ubuntu@"${SRV1APACHE}"  "sudo rm -rf /home/ubuntu/webapp && sudo mkdir -p /home/ubuntu/webapp/ && sudo rm -rf /var/www/html/* && sudo chown ubuntu:ubuntu /home/ubuntu/webapp"'
+                    sh 'scp -o StrictHostKeyChecking=no -r /home/ubuntu/webapp/* ubuntu@"${SRV1APACHE}":/home/ubuntu/webapp/'
+                    sh 'ssh -o StrictHostKeyChecking=no ubuntu@"${SRV1APACHE}"  "sudo rm -rf /var/www/html/* && sudo cp -r /home/ubuntu/webapp/* /var/www/html/ && sudo service apache2 reload"'
+                }
+            }
+           
+        }
+        stage('Push2AppContainer') {
+            steps {
+               sshagent(['docker-srv']) {
+                    // some block
+                    sh 'ssh -o StrictHostKeyChecking=no ubuntu@"${SRV2DOCKER}"  "sudo rm -rf /home/ubuntu/webapp && sudo mkdir -p /home/ubuntu/webapp/ && sudo rm -rf /var/www/html/* && sudo chown ubuntu:ubuntu /home/ubuntu/webapp"'
+                    sh 'scp -o StrictHostKeyChecking=no -r /home/ubuntu/webapp/* ubuntu@"${SRV2DOCKER}":/home/ubuntu/webapp/'
+                    sh 'scp -o StrictHostKeyChecking=no -r /home/ubuntu/webapp/* ubuntu@"${SRV2DOCKER}":/home/ubuntu/'
+                    sh 'scp -o StrictHostKeyChecking=no -r /home/ubuntu/scripts/Dockerfile ubuntu@"${SRV2DOCKER}":/home/ubuntu/'
+                    sh 'ssh -o StrictHostKeyChecking=no ubuntu@"${SRV2DOCKER}" "docker build -t itrobasi/web02:latest . && sudo cat ~/dockerpw | docker login --username itrobasi --password-stdin && docker push itrobasi/web02:latest"'
+                    sh 'ssh -o StrictHostKeyChecking=no ubuntu@"${SRV2DOCKER}" "docker pull itrobasi/web02:latest && docker ps -aq | xargs docker stop | xargs docker rm && docker run -d -p 10001:80 itrobasi/web02:latest && docker run -d -p 10002:80 itrobasi/web02:latest" '
+                }
+            }
+        }
+    }
+}
